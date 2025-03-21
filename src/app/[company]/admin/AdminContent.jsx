@@ -4,11 +4,10 @@ import { getAuth, onAuthStateChanged } from "firebase/auth";
 import { db } from "../../firebase/config";
 import { doc, getDoc, collection, getDocs, addDoc } from "firebase/firestore";
 import { useEffect, useState } from "react";
-import { Calendar, momentLocalizer } from "react-big-calendar";
 import moment from "moment";
-import "react-big-calendar/lib/css/react-big-calendar.css";
+import "moment/locale/pt-br";
 
-const localizer = momentLocalizer(moment);
+moment.locale("pt-br");
 
 export default function AdminContent({ company, config, users: initialUsers }) {
   const [userLevel, setUserLevel] = useState(null);
@@ -28,6 +27,7 @@ export default function AdminContent({ company, config, users: initialUsers }) {
     sabado: { inicio: "", fim: "" },
     domingo: { inicio: "", fim: "" },
   });
+  const [selectedDate, setSelectedDate] = useState(moment().toDate()); // Novo estado para o dia selecionado
   const auth = getAuth();
 
   const timeOptions = Array.from({ length: 24 }, (_, i) => {
@@ -138,31 +138,41 @@ export default function AdminContent({ company, config, users: initialUsers }) {
     }));
   };
 
-  const getBookingEvents = () => {
-    return bookings.map((booking) => {
-      const court = courts.find((c) => c.id === booking.courtId);
-      const [start, end] = booking.horario.split(": ")[1].split("-");
-      const dayIndex = ["domingo", "segunda", "terca", "quarta", "quinta", "sexta", "sabado"].indexOf(
-        booking.horario.split(": ")[0]
-      );
-      const startDate = moment(booking.data)
-        .startOf("week")
-        .add(dayIndex, "days")
-        .set({ hour: parseInt(start.split(":")[0]), minute: 0 });
-      const endDate = moment(startDate).set({ hour: parseInt(end.split(":")[0]), minute: 0 });
-      return {
-        title: `${court?.nome || "Quadra"} - ${booking.userEmail}`,
-        start: startDate.toDate(),
-        end: endDate.toDate(),
-        resource: booking,
-      };
-    });
-  };
-
   const totalRevenue = bookings.reduce((sum, booking) => {
     const court = courts.find((c) => c.id === booking.courtId);
     return sum + (court?.precoPorHora || 0);
   }, 0);
+
+  // Função para gerar os horários do dia (00:00 às 23:00)
+  const getTimeSlots = () => {
+    return Array.from({ length: 24 }, (_, i) => ({
+      hour: `${i.toString().padStart(2, "0")}:00`,
+    }));
+  };
+
+  // Função para obter agendamentos do dia selecionado
+  const getBookingsForDay = () => {
+    const selectedDateStr = moment(selectedDate).format("YYYY-MM-DD");
+    return bookings
+      .filter((booking) => booking.data === selectedDateStr)
+      .map((booking) => {
+        const court = courts.find((c) => c.id === booking.courtId);
+        const startTime = moment(`${booking.data} ${booking.horario}`, "YYYY-MM-DD HH:mm");
+        const endTime = startTime.clone().add(1, "hour"); // Assume 1 hora por padrão
+        return {
+          courtId: booking.courtId,
+          courtName: court?.nome || "Quadra",
+          userEmail: booking.userEmail,
+          start: startTime.format("HH:mm"),
+          end: endTime.format("HH:mm"),
+        };
+      });
+  };
+
+  // Função para navegar entre dias
+  const handleNavigate = (days) => {
+    setSelectedDate(moment(selectedDate).add(days, "days").toDate());
+  };
 
   if (loading) return <p className="text-center text-white py-10">Carregando...</p>;
   if (userLevel === -1) return <p className="text-center text-white py-10">Acesso negado. Faça login para continuar.</p>;
@@ -298,18 +308,66 @@ export default function AdminContent({ company, config, users: initialUsers }) {
       </section>
 
       <section className="mb-12">
-        <h2 className="text-3xl font-semibold mb-6 text-center">Agendamentos</h2>
+        <h2 className="text-3xl font-semibold mb-6 text-center">Agendamentos - {moment(selectedDate).format("DD/MM/YYYY")}</h2>
         <div className="bg-gray-800 p-6 rounded-lg shadow-lg max-w-5xl mx-auto">
-          <Calendar
-            localizer={localizer}
-            events={getBookingEvents()}
-            startAccessor="start"
-            endAccessor="end"
-            style={{ height: 500 }}
-            defaultView="week"
-            views={["week", "month"]}
-            eventPropGetter={() => ({ style: { backgroundColor: config?.config?.corSecundaria || "#28a745" } })}
-          />
+          <div className="flex justify-between mb-4">
+            <button
+              onClick={() => handleNavigate(-1)}
+              className="px-4 py-2 bg-gray-600 rounded-md hover:bg-gray-700 text-white"
+            >
+              Dia Anterior
+            </button>
+            <button
+              onClick={() => handleNavigate(1)}
+              className="px-4 py-2 bg-gray-600 rounded-md hover:bg-gray-700 text-white"
+            >
+              Próximo Dia
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-gray-700">
+                  <th className="p-2 border border-gray-600 w-20">Horário</th>
+                  {courts.map((court) => (
+                    <th key={court.id} className="p-2 border border-gray-600">{court.nome}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {getTimeSlots().map((slot) => {
+                  const bookingsForHour = getBookingsForDay().filter(
+                    (booking) => booking.start === slot.hour
+                  );
+                  return (
+                    <tr key={slot.hour} className="border-b border-gray-600">
+                      <td className="p-2 border border-gray-600 font-medium">{slot.hour}</td>
+                      {courts.map((court) => {
+                        const booking = bookingsForHour.find((b) => b.courtId === court.id);
+                        return (
+                          <td
+                            key={court.id}
+                            className={`p-2 border border-gray-600 ${
+                              booking ? "bg-green-600" : "bg-gray-800"
+                            }`}
+                          >
+                            {booking ? (
+                              <div className="text-sm">
+                                <p>{booking.userEmail}</p>
+                                <p>{`${booking.start}-${booking.end}`}</p>
+                              </div>
+                            ) : (
+                              "-"
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       </section>
 
